@@ -15,7 +15,7 @@ import contextlib
 import datetime as dt
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import cast
 from urllib.parse import quote
 
@@ -35,6 +35,14 @@ _RESPONSE_CACHE_MAX_ENTRIES = 1000
 
 # (monotonic_ts, parsed json | raw text, etag | None)
 _CacheTuple = tuple[float, object, str | None]
+
+# A response-projector applied to a raw GitHub payload BEFORE it is cached (and returned): callers
+# that read only a small slice of a large response pass one so the 90 s response cache retains the
+# reduced shape, not the full body. The single-call memory-footprint fix for the cockpit rollup
+# handlers — measured the raw compare response at 1.3 MB (unified-trading-pm) / 1.1 MB
+# (agent-orchestrator, full file patches) vs the ~2 KiB reduced shape the overview reads
+# (deployment_api_sigabrt_crash_loop_2026_07_24.md, [BACKEND] P2 2026-08-06).
+Projector = Callable[[object], object]
 
 # GitHub App ("uts-ci-poller") installation-token pool — a SEPARATE 5000/hr REST +
 # 5000-pt/hr GraphQL budget from the shared user PAT. Secret Manager names (same
@@ -248,7 +256,14 @@ async def gh_app_rate_limit(
     }
 
 
-async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str, *, cache_response: bool = True) -> object:
+async def gh_get_json(
+    session: aiohttp.ClientSession,
+    token: str,
+    path: str,
+    *,
+    cache_response: bool = True,
+    project: Projector | None = None,
+) -> object:
     """GET an api.github.com path, parsed JSON, behind the TTL + ETag cache. 404 -> None.
 
     Two layers of rate-cost avoidance:
@@ -262,6 +277,12 @@ async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str, *, 
     once for a one-off classification, see ``head_commit_message``) where caching would
     only ever MISS on every future call and just hold memory for a key nothing will ever
     touch again.
+
+    ``project`` (optional) reduces the parsed payload BEFORE it is returned AND cached, so
+    the 90 s response cache retains only the fields the caller reads instead of the full body
+    (see ``_project_compare``/``_project_pulls``/``_project_workflow_runs``). The same URL
+    must always be fetched with the SAME projector — a call that reads a bigger slice of a
+    projected URL would be served the reduced cached shape.
     """
     url = f"{_API_BASE}{path}"
     now = time.monotonic()
@@ -292,6 +313,8 @@ async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str, *, 
         # GitHub responses are heterogeneous per endpoint; shapes are narrowed by the typed
         # helpers downstream (branch_head/compare/pulls), not a single Pydantic model.
         payload = cast(object, await resp.json())  # noqa: qg-raw-json
+        if project is not None:
+            payload = project(payload)
         etag = resp.headers.get("ETag")
     if cache_response:
         _response_cache[url] = (now, payload, etag)
@@ -376,6 +399,79 @@ def _as_list(value: object) -> list[object]:
     return cast(list[object], value) if isinstance(value, list) else []
 
 
+def _project_compare(payload: object) -> object:
+    """Reduce a compare response to the 3 delta fields + file NAMES the overview reads.
+
+    The raw compare body carries up to 300 file objects with full unified-diff ``patch`` text —
+    the single largest GitHub payload the fleet overview retains (measured 1.3 MB for
+    unified-trading-pm / 1.1 MB for agent-orchestrator). ``compare_branches`` reads only
+    ahead_by/behind_by/total_files_changed and ``diverged_content_lag`` reads only the file
+    names, so the reduced shape (a few KiB) is all that needs to live in the 90 s response cache.
+    """
+    data = _as_dict(payload)
+    return {
+        "ahead_by": data.get("ahead_by"),
+        "behind_by": data.get("behind_by"),
+        "total_files_changed": data.get("total_files_changed"),
+        "files": [
+            {"filename": str(_as_dict(f).get("filename") or "")}
+            for f in _as_list(data.get("files"))
+            if isinstance(f, dict)
+        ],
+    }
+
+
+def _project_pulls(payload: object) -> object:
+    """Reduce a pulls list/detail response to the PR fields the promotion classifier reads.
+
+    A pulls response for a repo with many open PRs carries each PR's nested head/base repository
+    objects (measured 219 KB for unified-trading-pm) — ``list_open_promotion_prs`` reads only a
+    handful of classification fields (number/draft/refs/mergeable_state/auto_merge/…), so the
+    cache retains the slimmed list. Handles both the list endpoint (a bare array) and the detail
+    endpoint (a single PR object).
+    """
+
+    def _pr_fields(pr: object) -> dict[str, object]:
+        d = _as_dict(pr)
+        base = _as_dict(d.get("base"))
+        head = _as_dict(d.get("head"))
+        return {
+            "number": d.get("number"),
+            "title": d.get("title"),
+            "html_url": d.get("html_url"),
+            "created_at": d.get("created_at"),
+            "auto_merge": d.get("auto_merge"),
+            "mergeable_state": d.get("mergeable_state"),
+            "draft": d.get("draft"),
+            "base": {"ref": base.get("ref")},
+            "head": {"ref": head.get("ref"), "sha": head.get("sha")},
+        }
+
+    if isinstance(payload, list):
+        return [_pr_fields(item) for item in payload]
+    return _pr_fields(payload)
+
+
+def _project_workflow_runs(payload: object) -> object:
+    """Reduce an Actions runs-list response to the name/path/conclusion fields the rollup reads.
+
+    ``/actions/runs?head_sha=&per_page=100`` returns up to 100 full workflow-run objects (each
+    with nested head_commit/repository payloads) — ``head_check_rollup`` reads only name/path/
+    conclusion, so the cache retains the slimmed runs list instead of the multi-hundred-KiB body.
+    """
+    data = _as_dict(payload)
+    return {
+        "workflow_runs": [
+            {
+                "name": str(_as_dict(r).get("name") or ""),
+                "path": str(_as_dict(r).get("path") or ""),
+                "conclusion": str(_as_dict(r).get("conclusion") or ""),
+            }
+            for r in _as_list(data.get("workflow_runs"))
+        ]
+    }
+
+
 async def branch_head(
     session: aiohttp.ClientSession, token: str, org: str, repo: str, branch: str
 ) -> tuple[str | None, str | None, str | None]:
@@ -402,9 +498,16 @@ async def compare_branches(
     """(ahead_by, behind_by, files_changed) for base...head; None when either ref is absent.
 
     files_changed is the CONTENT delta (capped at 300 by the API page — fine as a signal;
-    squash-skewed commit counts alone lie, CLAUDE.md § "LDR is the SSOT").
+    squash-skewed commit counts alone lie, CLAUDE.md § "LDR is the SSOT"). Projects the raw
+    compare body down to the 3 numeric fields before caching — the file ``patch`` text (up to
+    1.3 MB for a drifted repo) is never retained.
     """
-    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/compare/{base}...{head}?per_page=1")
+    payload = await gh_get_json(
+        session,
+        token,
+        f"/repos/{org}/{repo}/compare/{base}...{head}?per_page=1",
+        project=_project_compare,
+    )
     if payload is None:
         return None
     data = _as_dict(payload)
@@ -437,7 +540,14 @@ async def diverged_content_lag(
     true content lag, and the count of DISTINCT last-setting commits is the real (squash-free) commit
     count. Bounded to `max_files` per repo (a deeply-drifted repo's exact age matters less than the
     >threshold signal). Returns (None, 0) when nothing is diverged."""
-    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/compare/{base}...{head}?per_page=1")
+    # Same projector as compare_branches (same URL → same reduced cached shape): only the file
+    # NAMES are read here, so the full patch-bearing compare body is never retained.
+    payload = await gh_get_json(
+        session,
+        token,
+        f"/repos/{org}/{repo}/compare/{base}...{head}?per_page=1",
+        project=_project_compare,
+    )
     files = [str(_as_dict(f).get("filename") or "") for f in _as_list(_as_dict(payload).get("files"))]
     files = [f for f in files if f][:max_files]
     if not files:
@@ -576,9 +686,14 @@ async def list_open_promotion_prs(
     """Open PRs into staging/main (+ LDR-headed), enriched with per-PR mergeable_state.
 
     The list endpoint omits mergeable_state, so each candidate PR gets one detail GET —
-    promotion PRs are rare (0-2 per repo) so this stays cheap under the TTL cache.
+    promotion PRs are rare (0-2 per repo) so this stays cheap under the TTL cache. Both the
+    list and the per-PR detail payloads are projected to the classification fields before
+    caching (a pulls body carries each PR's nested head/base repository objects — measured
+    219 KB for unified-trading-pm).
     """
-    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/pulls?state=open&per_page=30")
+    payload = await gh_get_json(
+        session, token, f"/repos/{org}/{repo}/pulls?state=open&per_page=30", project=_project_pulls
+    )
     candidates: list[dict[str, object]] = []
     for item in _as_list(payload):
         pr = _as_dict(item)
@@ -595,7 +710,9 @@ async def list_open_promotion_prs(
     enriched: list[dict[str, object]] = []
     for pr in candidates:
         number = int(cast(int, pr.get("number") or 0))
-        detail_payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/pulls/{number}")
+        detail_payload = await gh_get_json(
+            session, token, f"/repos/{org}/{repo}/pulls/{number}", project=_project_pulls
+        )
         detail = _as_dict(detail_payload)
         head = _as_dict(detail.get("head") or pr.get("head"))
         base = _as_dict(detail.get("base") or pr.get("base"))
@@ -640,8 +757,15 @@ async def head_check_rollup(
     workflows, so the workflow-run rollup carries the same (failed, v2_present) signal the
     check-run rollup did — and without the 403 this feeds the v2-never-reported deadlock
     classifier honestly (the old 403 path defaulted `v2_present=True`, silently masking the
-    deadlock signature)."""
-    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/actions/runs?head_sha={sha}&per_page=100")
+    deadlock signature). The runs body (up to 100 full run objects, each with nested
+    head_commit/repository payloads) is projected to name/path/conclusion before caching —
+    the rollup reads nothing else."""
+    payload = await gh_get_json(
+        session,
+        token,
+        f"/repos/{org}/{repo}/actions/runs?head_sha={sha}&per_page=100",
+        project=_project_workflow_runs,
+    )
     data = _as_dict(payload)
     failed = False
     v2_present = False
