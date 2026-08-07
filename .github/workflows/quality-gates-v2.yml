@@ -94,6 +94,7 @@ jobs:
     # needed job doesn't also skip THIS job.
     if: >-
       always() && needs.quality-gates-v2.result == 'failure'
+      && needs.quality-gates-v2.outputs.billing_kill != 'true'
       && github.event_name == 'pull_request'
       && (github.base_ref == 'staging' || github.base_ref == 'main')
     runs-on: ubuntu-latest
