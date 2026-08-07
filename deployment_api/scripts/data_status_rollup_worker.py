@@ -110,10 +110,26 @@ _ROLLUP_START_DATE = "2018-01-01"
 # market-data-processing-service now regularly hits _CHILD_JOIN_TIMEOUT_S on
 # BOTH its manifest and coverage steps. Both are handled the SAME
 # honest-failure way as MTDS — caught per-service, logged loudly via
-# logger.error + a SERVICE_FAILED log_event, never a silent placeholder — so
-# no code change is required for correctness; raising the ceilings or
-# optimizing the underlying compute (out of scope here) is what would
-# actually close the gap, not just document it.
+# logger.error + a SERVICE_FAILED log_event, never a silent placeholder.
+#
+# SHARDED 2026-08-07 (infra_health_audit_findings_fix_2026_08_07.md P1, the
+# uts-prod-data-status-rollup-svc container OOM — "Memory limit of 32768 MiB
+# exceeded with 32860 MiB used" — causing the 420s per-service timeouts above for
+# MTDS/instruments-service): the per-SERVICE isolation this ceiling protects was
+# necessary but not sufficient — within one service's child, the manifest and
+# coverage builds still looped over each MarketCategory asset-group SERIALLY
+# in-process (data_status_service._THREAD_POOL_DISABLED forces "one AG at a time",
+# but pandas/pyarrow/numpy's C allocators do not reliably return freed arena memory
+# to the OS between loop iterations, so RSS ratchets up across the ~5 categories
+# even though only one is logically alive at a time). _SERIAL_DISPATCH_ISOLATED
+# (set True below) shards ONE LEVEL FURTHER: each category now runs in its OWN
+# throwaway subprocess (manifest.py's _dispatch_serial_isolated,
+# coverage.py's _build_coverage_for_cat_dispatch) so the OS reclaims 100% of a
+# category's memory via full process exit before the next category starts, instead
+# of relying on in-process GC. This is the genuine fix, not a ceiling bump — see
+# data_status_service.py's _SERIAL_DISPATCH_ISOLATED docstring for the full
+# rationale. The per-SERVICE ceilings below are kept unchanged as the outer
+# defense-in-depth backstop.
 _CHILD_RLIMIT_AS_BYTES = 24 * 1024**3  # 24Gi, for a 32Gi container ceiling
 _CHILD_JOIN_TIMEOUT_S = 420  # wall-clock backstop; the rlimit above is the primary guard
 
@@ -256,6 +272,9 @@ def _child_build_and_write_service(
 
         _dss_mod._PROCESS_POOL_DISABLED = True  # pyright: ignore[reportPrivateUsage]
         _dss_mod._THREAD_POOL_DISABLED = True  # pyright: ignore[reportPrivateUsage]
+        # Per-category subprocess isolation — see _SERIAL_DISPATCH_ISOLATED's docstring
+        # in data_status_service.py (root-cause fix for the 32Gi container OOM, 2026-08-07).
+        _dss_mod._SERIAL_DISPATCH_ISOLATED = True  # pyright: ignore[reportPrivateUsage]
 
         storage_client = get_storage_client(project_id=project_id)
         dss = DataStatusService()

@@ -195,6 +195,27 @@ class TestChildBuildAndWriteService:
         assert result["coverage_ok"] is True
         assert result["service"] == "instruments-service"
 
+    def test_serial_dispatch_isolated_flag_is_set(self) -> None:
+        # Root-cause fix for the uts-prod-data-status-rollup-svc container OOM
+        # (2026-08-07, "Memory limit of 32768 MiB exceeded with 32860 MiB used") --
+        # each per-service child must ALSO isolate its own per-category builds, not
+        # just run one giant in-process serial sweep over the ~5 MarketCategory
+        # categories. See _SERIAL_DISPATCH_ISOLATED's docstring in
+        # data_status_service.py for the full rationale.
+        import deployment_api.services.data_status_service as dss_mod
+        from deployment_api.scripts.data_status_rollup_worker import _child_build_and_write_service
+
+        mock_storage, mock_dss_instance = self._make_mocks()
+        result_queue: MagicMock = MagicMock()
+        with (
+            patch(_PATCH_SET_RLIMIT),
+            patch(_PATCH_GET_STORAGE, return_value=mock_storage),
+            patch(_PATCH_DSS, return_value=mock_dss_instance),
+        ):
+            _child_build_and_write_service("proj", "bucket", "instruments-service", "2024-01-31", 999, result_queue)
+
+        assert dss_mod._SERIAL_DISPATCH_ISOLATED is True  # pyright: ignore[reportPrivateUsage]
+
     def test_manifest_failure_does_not_block_coverage(self) -> None:
         from deployment_api.scripts.data_status_rollup_worker import _child_build_and_write_service
 

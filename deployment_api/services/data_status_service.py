@@ -436,6 +436,40 @@ _THREAD_POOL_DISABLED = False
 # would race under concurrency=80). Module-level so tests/scripts can patch it.
 _MAX_BUILD_WORKERS = 3
 
+# Per-category SUBPROCESS-isolation toggle — root-cause fix for the
+# uts-prod-data-status-rollup-svc container OOM ("Memory limit of 32768 MiB exceeded
+# with 32860 MiB used", 2026-08-07, causing repeated 420s timeouts on both the manifest
+# and coverage-summary rollup steps for market-tick-data-service/instruments-service).
+# When True, each asset-group category's build runs in its OWN throwaway
+# ``bounded_subprocess.run_bounded`` child (see manifest.py's ``_dispatch_serial_isolated``
+# + coverage.py's ``_build_coverage_for_cat_dispatch``) instead of in-process. The
+# _THREAD_POOL_DISABLED toggle above already forces "one AG cell-grid at a time"
+# in-process, but pandas/pyarrow/numpy's C allocators do NOT reliably return freed arena
+# memory to the OS between loop iterations — so RSS ratchets UP across the ~5
+# MarketCategory categories within one long-lived process even though only one category's
+# data is logically alive at a time. A full child-process exit after each category
+# guarantees the OS reclaims 100% of that category's memory before the next one starts,
+# which in-process GC does not. Only data_status_rollup_worker.py's per-service isolated
+# child sets this True — the on-demand API request path already has its own OUTER
+# bounded_subprocess defense-in-depth layer per request (a single API request already runs
+# in its own throwaway child), so nesting a third isolation layer there would only add
+# spawn overhead with no memory benefit. Module-level so tests/scripts can patch it, per
+# the existing pattern of the two toggles above.
+_SERIAL_DISPATCH_ISOLATED = False
+
+# Ceiling + wall-clock backstop for each per-category child spawned under
+# _SERIAL_DISPATCH_ISOLATED. Reuses the SAME per-service ceiling as
+# data_status_rollup_worker.py's ``_CHILD_RLIMIT_AS_BYTES`` (24Gi, for the 32Gi rollup
+# container) — isolation means each category now gets this full budget INDIVIDUALLY
+# rather than all categories sharing one cumulative budget across the process lifetime.
+# The timeout is generous for a SINGLE category (previously up to ~5 categories together
+# had to fit inside data_status_rollup_worker.py's 420s per-service ceiling; a lone
+# category needs only a fraction of that) while staying comfortably under it, so a
+# per-category timeout should fire well before the outer per-service ceiling would ever
+# need to forcibly kill a category child mid-flight.
+_SERIAL_ISOLATED_CATEGORY_RLIMIT_BYTES = 24 * 1024**3  # 24Gi
+_SERIAL_ISOLATED_CATEGORY_TIMEOUT_S = 200
+
 _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _INDEX_CACHE_TTL = 300  # 5 minutes
 
