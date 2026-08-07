@@ -175,3 +175,38 @@ def test_reconcile_gcp_failure_returns_502(client: TestClient) -> None:
         resp = client.post("/api/vm-deployments/reconcile")
 
     assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# 5. Census unavailable → pass running_vm_names=None (heartbeat-age-only fallback)
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_census_unavailable_passes_none(client: TestClient) -> None:
+    """When get_vm_instance_details returns None, reap_stale receives running_vm_names=None.
+
+    Regression test for the empty-set-over-reap bug: a transient GCE API failure
+    must NOT be passed as an empty set (which _reap_reason reads as "no VMs running"
+    and falsely archives every stale-heartbeat entry as vm_not_running). Instead
+    running_vm_names=None triggers heartbeat-age-only fallback classification.
+    """
+    mock_registry = MagicMock()
+    mock_registry.list_active.return_value = [MagicMock()] * 3
+    mock_registry.reap_stale.return_value = []
+
+    with (
+        patch.object(DeploymentApiConfig, "is_mock_mode", return_value=False),
+        patch("deployment_api.routes.vm_deployments.DeploymentsRegistry", return_value=mock_registry),
+        patch("deployment_api.routes.vm_deployments.get_vm_instance_details", return_value=None),
+    ):
+        resp = client.post("/api/vm-deployments/reconcile")
+
+    assert resp.status_code == 200
+    # The key assertion: reap_stale MUST be called with running_vm_names=None
+    # (not an empty set) when the census is unavailable.
+    mock_registry.reap_stale.assert_called_once()
+    call_kwargs = mock_registry.reap_stale.call_args.kwargs
+    assert call_kwargs["running_vm_names"] is None, (
+        f"Expected running_vm_names=None (census unavailable → heartbeat-age-only fallback), "
+        f"got {call_kwargs['running_vm_names']!r}"
+    )

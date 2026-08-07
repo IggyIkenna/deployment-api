@@ -235,6 +235,27 @@ class TestOverviewMock:
         assert err["repo"] not in row_repos
 
 
+class TestOverviewCockpitGuard:
+    """2026-08-06 (deployment_api_sigabrt_crash_loop_2026_07_24.md OOM sub-issue) —
+    the shared cockpit-build guard (utils/cockpit_build_guard.py) must shed a live
+    (non-mock) overview with 503 + Retry-After once ``_COCKPIT_MAX_INFLIGHT`` heavy
+    builds are already in flight, instead of stacking another multi-GiB build on the
+    box (mirrors routes/data_status/_deploy_turbo.py's drilldown shed test)."""
+
+    def test_overview_sheds_503_when_cockpit_guard_at_capacity(self, client_repo_ci: TestClient) -> None:
+        from deployment_api.utils import cockpit_build_guard as guard
+
+        # Non-mock (reach the guard) + saturate the inflight counter — the shed check
+        # fires before any GitHub/manifest I/O, so this never leaves the box.
+        with (
+            patch(_PATCH_MOCK_MODE, return_value=False),
+            patch.object(guard, "_cockpit_inflight", guard._COCKPIT_MAX_INFLIGHT),
+        ):
+            resp = client_repo_ci.get("/api/repo-ci/overview")
+        assert resp.status_code == 503
+        assert resp.headers.get("Retry-After") == "5"
+
+
 class TestDetailMock:
     def test_detail_shape(self, client_repo_ci: TestClient) -> None:
         with patch(_PATCH_MOCK_MODE, return_value=True):

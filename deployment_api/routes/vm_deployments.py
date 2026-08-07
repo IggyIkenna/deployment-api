@@ -222,8 +222,8 @@ def _compute_vm_deployments(days: int, filter_stale: bool) -> VmDeploymentsListM
     # correlates with. See deployment_api/utils/request_memory_profiling.py.
     with log_rss_delta("vm_deployments._compute_vm_deployments"):
         try:
-            # Get actual VM details from GCP
-            vm_details = get_vm_instance_details(project_id) if filter_stale else {}
+            # Get actual VM details from GCP (None on API failure → degrade to {})
+            vm_details = (get_vm_instance_details(project_id) or {}) if filter_stale else {}
             running_vm_names = set(vm_details.keys()) if filter_stale else None
 
             # Get all registry entries (Firestore-first via resolve_active_registry, GCS fallback)
@@ -393,7 +393,13 @@ def reconcile_vm_deployments() -> VmReconcileResult:
         total_active_before = len(all_active)
 
         vm_details = get_vm_instance_details(project_id)
-        running_vm_names = {name for name, details in vm_details.items() if details.get("status") == "RUNNING"}
+        if vm_details is None:
+            # Census unavailable — pass None so _reap_reason falls back to
+            # heartbeat-age-only classification instead of treating every
+            # stale-heartbeat entry as vm_not_running (empty-set-over-reap bug).
+            running_vm_names: set[str] | None = None
+        else:
+            running_vm_names = {name for name, details in vm_details.items() if details.get("status") == "RUNNING"}
 
         reaped = registry.reap_stale(running_vm_names=running_vm_names)
 
@@ -402,15 +408,15 @@ def reconcile_vm_deployments() -> VmReconcileResult:
         raise HTTPException(status_code=502, detail="Registry reconcile failed") from exc
 
     logger.info(
-        "reconcile_vm_deployments: reaped %d of %d active entries (%d VMs running)",
+        "reconcile_vm_deployments: reaped %d of %d active entries (%s VMs running)",
         len(reaped),
         total_active_before,
-        len(running_vm_names),
+        len(running_vm_names) if running_vm_names is not None else "unknown",
     )
     return VmReconcileResult(
         reaped_count=len(reaped),
         reaped=[e.deployment_id for e in reaped],
-        running_vm_count=len(running_vm_names),
+        running_vm_count=len(running_vm_names) if running_vm_names is not None else 0,
         total_active_before=total_active_before,
     )
 
@@ -430,7 +436,7 @@ def get_vm_deployment(deployment_id: str) -> VmDeploymentEntryModel:
             raise HTTPException(status_code=404, detail=f"VM deployment '{deployment_id}' not found")
 
         # Get VM details if it's an active deployment
-        vm_details = get_vm_instance_details(project_id) if entry.status == "running" else {}
+        vm_details = (get_vm_instance_details(project_id) or {}) if entry.status == "running" else {}
         return _to_model(entry, vm_details)
 
     except HTTPException:
