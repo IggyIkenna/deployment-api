@@ -488,6 +488,18 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
         if ghost_mask.any():
             logger.debug("_read_index_cached: dropping %d ghost venue rows from %s", int(ghost_mask.sum()), bucket)
             idx = idx[~ghost_mask].reset_index(drop=True)
+    # Memory-footprint profile (plan: data_status_cell_grid_rearchitecture_2026_07_18 todo 1).
+    # Logged on every cache-miss (GCS fetch) so operators can confirm per-service growth rates.
+    # Read pattern: DRILLDOWN_COLUMNS projection, ALL row groups (no date pushdown) — full
+    # manifest loaded unconditionally regardless of the requested display window.
+    df_bytes = idx.memory_usage(deep=True).sum()
+    logger.info(
+        "manifest-read-profile bucket=%s rows=%d df_bytes=%d df_gb=%.3f",
+        bucket,
+        len(idx),
+        df_bytes,
+        df_bytes / 1024**3,
+    )
     _INDEX_CACHE[bucket] = (now, idx)
     return idx
 
