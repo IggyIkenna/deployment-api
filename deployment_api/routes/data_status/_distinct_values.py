@@ -140,7 +140,6 @@ from unified_api_contracts.registry import (
     SPORTS_DATA_TYPE_ACCEPTED_STALE_UPPERCASE_RESIDUE,
     SPORTS_MARKET_TOKEN_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES,
     SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
-    SPORTS_VENUE_ACCEPTED_CROSS_AG_BLEED,
     TRADFI_CHAIN_AXIS_ACCEPTED_DEAD_RESIDUE,
     TRADFI_CHAIN_SNAPSHOT_ACCEPTED_NONCANONICAL_DATA_TYPES,
     TRADFI_INSTRUMENT_TYPE_ACCEPTED_UNRESOLVED_RESIDUE,
@@ -209,14 +208,14 @@ _BLANK_SENTINELS: frozenset[str] = frozenset({"", "none", "nan", "<na>", "null"}
 # + sports_venue_restamp_derived_candle_gap_2026_07_27.md family): every value below was
 # GCS-and-code investigated this session, never guessed — see the citing UAC exports
 # (`TRADFI_VENUE_ACCEPTED_NONCANONICAL_ALIASES`, `TRADFI_CHAIN_AXIS_ACCEPTED_DEAD_RESIDUE`,
-# `TRADFI_INSTRUMENT_TYPE_ACCEPTED_UNRESOLVED_RESIDUE`, `SPORTS_VENUE_ACCEPTED_CROSS_AG_BLEED`,
+# `TRADFI_INSTRUMENT_TYPE_ACCEPTED_UNRESOLVED_RESIDUE`,
 # `SPORTS_DATA_TYPE_ACCEPTED_STALE_UPPERCASE_RESIDUE`,
 # `SPORTS_MARKET_TOKEN_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES`) for the full per-value
 # evidence. `("chains", "tradfi")` and `("data_types"/"instrument_types", "sports")` are
 # NEW axis/asset_group cells in this dict (tradfi had no chains entry; sports had no
 # data_types/instrument_types entry) — none change the base canonical sets.
 _ACCEPTED_EXCEPTIONS: dict[tuple[str, str], frozenset[str]] = {
-    ("venues", "sports"): SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS | SPORTS_VENUE_ACCEPTED_CROSS_AG_BLEED,
+    ("venues", "sports"): SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
     ("venues", "cefi"): CEFI_VENUE_ACCEPTED_NONCANONICAL_ALIASES,
     ("venues", "tradfi"): TRADFI_VENUE_ACCEPTED_NONCANONICAL_ALIASES,
     ("chains", "tradfi"): TRADFI_CHAIN_AXIS_ACCEPTED_DEAD_RESIDUE,
