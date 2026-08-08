@@ -42,14 +42,12 @@ router = APIRouter()
 # Artifact Registry configuration
 _AR_HOST = "asia-northeast1-docker.pkg.dev"
 
-# Legacy AR repos use shortened names (pre-terraform).
-# Most newer repos use full service name as the AR repo.
-# Cloud Build pushes to unified-trading-system; legacy repos also checked.
+# Legacy AR repos use shortened names (pre-terraform); all other services push to
+# unified-trading-system via cloudbuild.yaml _REGISTRY_REPO, which is the default.
 _AR_REPO_OVERRIDES: dict[str, str] = {
     "instruments-service": "instruments",
     "execution-service": "execution",
     "market-data-processing-service": "market-data-processing",
-    "alerting-service": "unified-trading-system",
 }
 # Cloud Build canonical repo — all services push here via cloudbuild.yaml _REGISTRY_REPO
 _CB_REGISTRY_REPO = "unified-trading-system"
@@ -160,8 +158,13 @@ def _mock_builds_from_manifest(service: str, env: str) -> list[BuildEntry]:
 
 
 def _get_ar_repo_name(service: str) -> str:
-    """Map service name to its Artifact Registry repository name."""
-    return _AR_REPO_OVERRIDES.get(service, service)
+    """Map service name to its Artifact Registry repository name.
+
+    Defaults to _CB_REGISTRY_REPO (unified-trading-system) — the repo all services push
+    to via cloudbuild.yaml _REGISTRY_REPO. _AR_REPO_OVERRIDES covers only the three legacy
+    repos with shortened pre-terraform names that have their own named AR repo.
+    """
+    return _AR_REPO_OVERRIDES.get(service, _CB_REGISTRY_REPO)
 
 
 async def _list_ar_tags_from_repo(service: str, project: str, ar_repo: str) -> list[str]:

@@ -203,10 +203,10 @@ class TestGetArRepoName:
 
         assert _get_ar_repo_name("execution-service") == "execution"
 
-    def test_unknown_service_uses_service_name(self) -> None:
+    def test_unlisted_service_defaults_to_cb_repo(self) -> None:
         from deployment_api.routes.builds import _get_ar_repo_name
 
-        assert _get_ar_repo_name("my-custom-service") == "my-custom-service"
+        assert _get_ar_repo_name("my-custom-service") == "unified-trading-system"
 
 
 # ── list_builds route (mock mode) ─────────────────────────────────────────────
