@@ -20,7 +20,7 @@ ARG PROJECT_ID
 # cloudbuild) does NOT pass --build-arg BASE_IMAGE_DIGEST. An ARG declared after a FROM is
 # stage-scoped and invisible to a later FROM → empty digest → "invalid reference format".
 # Refreshed by update-dependency-version.yml on base-image republish.
-ARG BASE_IMAGE_DIGEST=sha256:f89bd3057e4e5988b39254d4e8c9f3f6f9edfca7485355c0734d2906a53ed3e1
+ARG BASE_IMAGE_DIGEST=sha256:0ef9079510767655792bfed91b3310a3a4a298edd5de07c9fe452b2849c7a8d2
 # ── Stage 0: build deployment-ui static bundle ─────────────────────────
 FROM public.ecr.aws/docker/library/node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c AS ui-builder
 WORKDIR /app/ui
