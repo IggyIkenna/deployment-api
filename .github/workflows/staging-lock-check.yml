@@ -1,14 +1,13 @@
 name: Staging Lock Check
 
-# Runs on PRs targeting staging to check if SIT is running.
-# PM dispatches 'staging-locked' / 'staging-unlocked' to re-run this check
-# when staging lock state changes.
+# Thin caller stub (fleet_workflow_template_dedup_to_unified_trading_ci_2026_08_06.md
+# todo 4) -- the actual logic now lives in unified-trading-ci as a workflow_call
+# reusable workflow. Local trigger config is unavoidable (GitHub Actions requires a
+# physical file per repo to declare it), but no job logic lives here anymore.
 #
-# Required status check name: "Staging Lock Check / check-staging-lock"
-# Register on the staging branch protection ruleset.
-#
-# SSOT: unified-trading-pm/scripts/workflow-templates/staging-lock-check.yml
-# Rollout: bash unified-trading-pm/scripts/workflow-templates/rollout-workflow-templates.sh
+# Do NOT hand-edit the logic here — edit
+# unified-trading-ci/.github/workflows/staging-lock-check.yml and every caller picks it up
+# automatically on the next run (pinned @main).
 
 on:
   pull_request:
@@ -37,74 +36,7 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   check-staging-lock:
-    name: check-staging-lock
-    # PR-context only: this job reports the required check on the PR head. A
-    # repository_dispatch run executes on the DEFAULT-branch ref and can never
-    # re-report on a PR head — that path is handled by refresh-open-prs below.
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check PM staging lock status
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GH_ORG: ${{ github.repository_owner }}
-        run: |
-          set -euo pipefail
-
-          # Fetch workspace-manifest.json from PM repo via API (no clone needed)
-          MANIFEST=$(curl -sL \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github.raw" \
-            "https://api.github.com/repos/${GH_ORG}/unified-trading-pm/contents/workspace-manifest.json")
-
-          if [ -z "$MANIFEST" ]; then
-            echo "WARNING: Could not fetch PM manifest -- assuming unlocked"
-            exit 0
-          fi
-
-          LOCKED=$(echo "$MANIFEST" | python3 -c "import json,sys; m=json.load(sys.stdin); print(str(m.get('staging_status',{}).get('locked',False)).lower())" 2>/dev/null || echo "false")
-
-          if [ "$LOCKED" = "true" ]; then
-            REASON=$(echo "$MANIFEST" | python3 -c "import json,sys; m=json.load(sys.stdin); print(m.get('staging_status',{}).get('locked_reason','SIT running'))" 2>/dev/null || echo "SIT running")
-            echo "Staging is LOCKED: $REASON"
-            echo "This PR will auto-merge once SIT completes and staging is unlocked."
-            echo "No action needed -- the check will re-run automatically when staging unlocks."
-            exit 1
-          fi
-
-          echo "Staging is unlocked -- will auto-merge when all checks pass"
-
-  # On staging-locked/staging-unlocked dispatch, refresh the verdicts pinned to OPEN PR heads.
-  # The prior single-job design ran the lock check on the dispatch event itself — but that run
-  # executes on the default-branch ref, so it NEVER re-reported the required check on any PR
-  # (incident 2026-06-10: greeks-service PR #21 kept a stale FAIL ~50 min after staging unlocked,
-  # blocking its green dep-update from merging). The only mechanism that refreshes a PR's check
-  # is re-running that PR's OWN run — do exactly that for every open PR targeting staging.
-  refresh-open-prs:
-    name: refresh-open-prs
-    if: github.event_name == 'repository_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Re-run stale Staging Lock Check runs on open staging PRs
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          set -euo pipefail
-          for PR in $(gh pr list --repo "${GITHUB_REPOSITORY}" --base staging --state open --json number --jq '.[].number'); do
-            HEAD_SHA=$(gh pr view "$PR" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq '.headRefOid')
-            RID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/staging-lock-check.yml/runs?head_sha=${HEAD_SHA}&per_page=5" \
-              --jq '[.workflow_runs[] | select(.conclusion == "failure")][0].id' 2>/dev/null || echo "")
-            if [ -n "$RID" ] && [ "$RID" != "null" ]; then
-              gh run rerun "$RID" --repo "${GITHUB_REPOSITORY}" 2>/dev/null \
-                && echo "re-ran stale lock-check run ${RID} on PR #${PR}" \
-                || echo "WARNING: could not re-run ${RID} for PR #${PR} (may be in progress)"
-            else
-              echo "PR #${PR}: no failed lock-check run to refresh"
-            fi
-          done
+    uses: IggyIkenna/unified-trading-ci/.github/workflows/staging-lock-check.yml@main
+    secrets: inherit
